@@ -13,10 +13,7 @@ services:
       - 4cat_db:/var/lib/postgresql/data/
 
   backend:
-    image: 4cat
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    image: digitalmethodsinitiative/4cat:1.25
     container_name: 4cat_backend
     env_file:
       - .env
@@ -28,10 +25,10 @@ services:
       - 4cat_data:/usr/src/app/data/
       - 4cat_share:/usr/src/app/docker/shared/
       - 4cat_logs:/usr/src/app/logs/
-    entrypoint: docker/docker-entrypoint.sh
+    entrypoint: docker/docker-entrypoint_prod.sh
 
   frontend:
-    image: 4cat
+    image: digitalmethodsinitiative/4cat:1.25
     container_name: 4cat_frontend
     depends_on:
       - db
