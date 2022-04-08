@@ -7,8 +7,6 @@ import base64
 import json
 import time
 import re
-import csv
-import shutil
 
 from pathlib import Path
 from PIL import Image, UnidentifiedImageError
@@ -62,6 +60,13 @@ class ImageDownloader(BasicProcessor):
 			"default": "image_url",
 			"tooltip": "If column contains a single URL, use that URL; else, try to find image URLs in the column's content"
 		},
+		"split-comma": {
+			"type": UserInput.OPTION_TOGGLE,
+			"help": "Split column values by comma?",
+			"default": False,
+			"tooltip": "If enabled, columns can contain multiple URLs separated by commas, which will be considered "
+					   "separately"
+		}
 	}
 
 	@classmethod
@@ -85,6 +90,8 @@ class ImageDownloader(BasicProcessor):
 		top_parent = self.dataset.get_genealogy()[0]
 		datasource = top_parent.parameters.get("datasource")
 		amount = self.parameters.get("amount", 100)
+		split_comma = self.parameters.get("split-comma", False)
+
 		if amount == 0:
 			amount = self.max_number_images
 		columns = self.parameters.get("columns")
@@ -145,18 +152,22 @@ class ImageDownloader(BasicProcessor):
 					continue
 
 				# remove all whitespace from beginning and end (needed for single URL check)
-				value = ' '.join(str(value).split())
-				if re.match(r"https?://(\S+)$", value):
-					# single URL
-					item_urls.add(value)
-				else:
-					# # Debug
-					# if re.match(r"https?://[^\s]+", value):
-					# 	self.dataset.log("Debug: OLD single detect url %s" % value)
+				values = [' '.join(str(value).split())]
+				if split_comma:
+					values = values[0].split(',')
 
-					# search for image URLs in string
-					item_urls |= set(img_link_regex.findall(value))
-					item_urls |= set(img_domain_regex.findall(value))
+				for value in values:
+					if re.match(r"https?://(\S+)$", value):
+						# single URL
+						item_urls.add(value)
+					else:
+						# # Debug
+						# if re.match(r"https?://[^\s]+", value):
+						# 	self.dataset.log("Debug: OLD single detect url %s" % value)
+
+						# search for image URLs in string
+						item_urls |= set(img_link_regex.findall(value))
+						item_urls |= set(img_domain_regex.findall(value))
 
 			if external:
 				# 4chan has a module that saves images locally, so if the columns in
@@ -183,6 +194,12 @@ class ImageDownloader(BasicProcessor):
 
 				[urls[item_url].append(id) for id in item_ids]
 
+		if not urls:
+			self.dataset.update_status("No image urls identified.", is_final=True)
+			self.dataset.finish(0)
+			return
+		else:
+			self.dataset.log('Collected %i image urls.' % len(urls))
 		# next, loop through images and download them - until we have as many images
 		# as required. Note that images that cannot be downloaded or parsed do
 		# not count towards that limit
@@ -198,8 +215,8 @@ class ImageDownloader(BasicProcessor):
 				raise ProcessorInterruptedException("Interrupted while downloading images.")
 
 			processed_urls += 1
-			self.dataset.update_status("Downloaded %i images; checking url for next %i/%i: %s" %
-									   (downloaded_images, processed_urls, len(urls), url))
+			self.dataset.update_status("Downloaded %i/%i images; downloading from %s" %
+									   (downloaded_images, len(urls), url))
 
 			try:
 				# acquire image
@@ -213,7 +230,7 @@ class ImageDownloader(BasicProcessor):
 				except UnidentifiedImageError:
 					picture = Image.open(image.raw)
 
-			except (FileNotFoundError, UnidentifiedImageError, AttributeError):
+			except (FileNotFoundError, UnidentifiedImageError, AttributeError, TypeError):
 				failures.append(url)
 				continue
 
@@ -263,6 +280,7 @@ class ImageDownloader(BasicProcessor):
 		with results_path.joinpath(".metadata.json").open("w", encoding="utf-8") as outfile:
 			json.dump(metadata, outfile)
 
+		self.dataset.log('Downloaded %i images.' % downloaded_images)
 		# finish up
 		self.dataset.update_status("Compressing images")
 		self.write_archive_and_finish(results_path)
@@ -395,12 +413,15 @@ class ImageDownloader(BasicProcessor):
 			rate_limited = rate_regex.search(page.content.decode("utf-8"))
 
 		# get link to image file from HTML returned
-		parser = etree.HTMLParser()
-		tree = etree.parse(StringIO(page.content.decode("utf-8")), parser)
 		try:
+			parser = etree.HTMLParser()
+			tree = etree.parse(StringIO(page.content.decode("utf-8")), parser)
 			image_url = css("a.thread_image_link")(tree)[0].get("href")
 		except IndexError as e:
 			self.dataset.log("Error: IndexError while trying to download 4chan image %s: %s" % (url, e))
+			raise FileNotFoundError()
+		except UnicodeDecodeError:
+			self.dataset.log("Error: 4chan image search could not be completed for image %s, skipping" % url)
 			raise FileNotFoundError()
 
 		# download image itself
